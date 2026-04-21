@@ -1,3 +1,5 @@
 streamlit
 icalendar
 pytz
+st-gsheets-connection
+pandas
