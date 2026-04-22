@@ -2,5 +2,4 @@ streamlit
 st-gsheets-connection
 pandas
 icalendar
-pytzstreamlit
-st-gsheets-connection
+pytz
