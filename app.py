@@ -37,7 +37,6 @@ if not st.session_state["logged_in"]:
         submit = st.form_submit_button("Let's go")
         
         if submit:
-            # Prüfen, ob der Name existiert und das Passwort stimmt
             if username in USERS and USERS[username] == password:
                 st.session_state["logged_in"] = True
                 st.session_state["username"] = username
@@ -65,6 +64,8 @@ else:
         st.header("🔐 Planer-Rechte (Admin)")
         password = st.text_input("Admin-Passwort", type="password", help="Nur für Event-Erstellung")
 
+        st.caption("Version 1.03")
+
     # --- SEITE 1: EVENTS ---
     if page == "🗓️ Events":
         col_title, col_abo = st.columns([2, 1])
@@ -83,7 +84,6 @@ else:
 
         st.write("---")
 
-        # --- ADMIN BEREICH: EVENT ERSTELLEN ---
         if password == ADMIN_PASSWORD:
             with st.expander("➕ Neues Event planen"):
                 with st.form("event_form"):
@@ -120,7 +120,6 @@ else:
                         st.success("Event gespeichert!")
                         st.rerun()
 
-        # --- EVENT ANZEIGE ---
         try:
             df = conn.read(worksheet="events", ttl=0).fillna("")
             p_df = conn.read(worksheet="participants", ttl=0).fillna("")
@@ -144,7 +143,6 @@ else:
                                     st.rerun()
                         
                         st.write("---")
-                        # UX-UPGRADE: Der eingeloggte Name wird automatisch verwendet!
                         curr_p = p_df[p_df['event'] == row['summary']]
                         is_joined = st.session_state["username"] in curr_p['name'].values
                         
@@ -171,11 +169,34 @@ else:
                 with st.form("new_v"):
                     v_title = st.text_input("Thema")
                     v_options = st.text_area("Optionen (pro Zeile)")
-                    v_id_new = st.text_input("Eindeutige ID (z.B. 1, 2, 3)")
-                    if st.form_submit_button("Start") and v_title and v_options and v_id_new:
+                    allow_multi = st.checkbox("Mehrfachauswahl erlauben? (Gut für Terminfindung)")
+                    
+                    if st.form_submit_button("Start") and v_title and v_options:
                         v_df = conn.read(worksheet="votings", ttl=0)
-                        new_v = pd.DataFrame([{"id": v_id_new, "title": v_title, "options": v_options, "active": "TRUE"}])
-                        conn.update(worksheet="votings", data=pd.concat([v_df, new_v], ignore_index=True))
+                        
+                        # --- AUTO-ID LOGIK (ZEITSTEMPEL) ---
+                        v_id_new = datetime.now().strftime("%Y%m%d%H%M%S")
+                        multi_val = "TRUE" if allow_multi else "FALSE"
+                        
+                        new_v = pd.DataFrame([{
+                            "id": v_id_new, 
+                            "title": v_title, 
+                            "options": v_options, 
+                            "active": "TRUE",          
+                            "multi_choice": multi_val  
+                        }])
+                        
+                        updated_df = pd.concat([v_df, new_v], ignore_index=True)
+                        
+                        expected_columns = ["id", "title", "options", "active", "multi_choice"]
+                        for col in expected_columns:
+                            if col not in updated_df.columns:
+                                updated_df[col] = "" 
+                                
+                        updated_df = updated_df[expected_columns] 
+                        
+                        conn.update(worksheet="votings", data=updated_df)
+                        st.cache_data.clear() 
                         st.rerun()
 
         try:
@@ -189,8 +210,15 @@ else:
 
                 for i, v_row in v_df.iterrows():
                     v_id_val = str(v_row['id']).strip()
+                    
+                    is_multi = False
+                    if 'multi_choice' in v_df.columns:
+                        val = str(v_row['multi_choice']).strip().upper()
+                        is_multi = val in ['TRUE', 'WAHR', '1', '1.0', 'YES', 'JA']
+
                     with st.container(border=True):
-                        st.subheader(f"🗳️ {v_row['title']}")
+                        st.subheader(f"🗳️ {v_row['title']}" + (" (Mehrfachwahl)" if is_multi else ""))
+                            
                         opts = [o.strip() for o in v_row['options'].split("\n") if o.strip()]
                         
                         if not votes_df.empty and 'voting_id' in votes_df.columns:
@@ -199,12 +227,42 @@ else:
                         else:
                             c_votes = pd.DataFrame(columns=['voting_id', 'name', 'option'])
                         
+                        # --- FEAT: WER FEHLT NOCH? (ADMIN ONLY) ---
+                        if password == ADMIN_PASSWORD:
+                            voted_users = set(c_votes['name'].unique()) if 'name' in c_votes.columns else set()
+                            all_users = set(USERS.keys())
+                            missing_users = all_users - voted_users
+                            
+                            if missing_users:
+                                st.warning(f"⏳ **Noch offen von:** {', '.join(missing_users)}")
+                            else:
+                                st.success("🎯 Alle BOIIIS haben abgestimmt!")
+
+                        # Balken & Zählung
                         for o in opts:
                             count = len(c_votes[c_votes['option'] == o]) if 'option' in c_votes.columns else 0
                             st.write(f"**{o}** ({count} Stimmen)")
-                            st.progress(min(count / 10, 1.0))
+                            # Sichere Division, falls USERS mal leer sein sollte
+                            user_count = max(1, len(USERS))
+                            st.progress(min(count / user_count, 1.0))
                         
-                        # Prüfen, ob der User hier schon abgestimmt hat
+                        # Enthaltungen anzeigen
+                        declined_count = len(c_votes[c_votes['option'] == "Kein Interesse / Enthaltung"]) if 'option' in c_votes.columns else 0
+                        if declined_count > 0:
+                            st.caption(f"ℹ️ {declined_count} Person(en) haben kein Interesse oder enthalten sich.")
+
+                        # --- FEAT: DETAIL-AUSWERTUNG (ADMIN ONLY) ---
+                        if password == ADMIN_PASSWORD and not c_votes.empty:
+                            with st.expander("🕵️‍♂️ Detail-Auswertung (Wer hat was gewählt?)"):
+                                for o in opts:
+                                    voters = c_votes[c_votes['option'] == o]['name'].tolist() if 'option' in c_votes.columns else []
+                                    if voters:
+                                        st.write(f"- **{o}:** {', '.join(voters)}")
+                                
+                                declined_voters = c_votes[c_votes['option'] == "Kein Interesse / Enthaltung"]['name'].tolist() if 'option' in c_votes.columns else []
+                                if declined_voters:
+                                    st.write(f"- **Kein Interesse:** {', '.join(declined_voters)}")
+
                         has_voted = False
                         if not c_votes.empty and 'name' in c_votes.columns:
                             has_voted = st.session_state["username"] in c_votes['name'].values
@@ -212,13 +270,30 @@ else:
                         col_v1, col_v2 = st.columns([1, 1])
                         with col_v1:
                             if has_voted:
-                                st.success("Du hast bereits abgestimmt! 🗳️")
+                                st.success("Erledigt! ✅")
                             else:
                                 with st.popover("Abstimmen"):
-                                    # UX-UPGRADE: Auch hier kein Namens-Feld mehr nötig!
-                                    u_choice = st.radio("Wahl:", opts, key=f"uc_{v_id_val}")
+                                    if is_multi:
+                                        u_choices = st.multiselect("Deine Favoriten:", opts, key=f"uc_{v_id_val}")
+                                    else:
+                                        u_choice_single = st.radio("Deine Wahl:", opts, key=f"uc_{v_id_val}")
+                                        u_choices = [u_choice_single] if u_choice_single else []
+
                                     if st.button("Voten!", key=f"vb_{v_id_val}"):
-                                        new_vote = pd.DataFrame([{"voting_id": v_id_val, "name": st.session_state["username"], "option": u_choice}])
+                                        if not u_choices:
+                                            st.warning("Bitte wähle etwas aus.")
+                                        else:
+                                            new_votes = pd.DataFrame([
+                                                {"voting_id": v_id_val, "name": st.session_state["username"], "option": c} 
+                                                for c in u_choices
+                                            ])
+                                            conn.update(worksheet="votes", data=pd.concat([votes_df, new_votes], ignore_index=True))
+                                            st.rerun()
+                                            
+                                    st.write("---")
+                                    # FEAT: KEIN INTERESSE BUTTON
+                                    if st.button("Kein Interesse ✋", key=f"decl_{v_id_val}", use_container_width=True):
+                                        new_vote = pd.DataFrame([{"voting_id": v_id_val, "name": st.session_state["username"], "option": "Kein Interesse / Enthaltung"}])
                                         conn.update(worksheet="votes", data=pd.concat([votes_df, new_vote], ignore_index=True))
                                         st.rerun()
                         
@@ -230,5 +305,3 @@ else:
                 st.info("Keine aktiven Umfragen.")
         except Exception as e: 
             st.error(f"Votings-Fehler: {e}")
-
-
