@@ -3,102 +3,100 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import urllib.parse
 from datetime import datetime
+import time
 
 # --- SEITEN-KONFIGURATION ---
 st.set_page_config(page_title="The BOIIIS App", page_icon="📅", layout="centered")
 
 # --- VERBINDUNG ZUM GOOGLE SHEET ---
 conn = st.connection("gsheets", type=GSheetsConnection)
+CACHE_TIME = 600 # 10 Minuten Caching für maximale Performance
 
-# --- SICHERHEIT (AUS SECRETS LADEN) ---
+# --- SICHERHEIT & DATENLADEN ---
 try:
     ICAL_URL = st.secrets["calendar"]["ical_link"]
     ADMIN_PASSWORD = st.secrets["auth"]["admin_password"]
-    USERS = st.secrets["users"] # Lädt alle angelegten Kumpels
+    USERS = st.secrets["users"] 
+    USER_OPTIONS = list(USERS.keys())
 except Exception:
-    st.error("❌ Secrets nicht gefunden! Bitte ical_link, admin_password und [users] konfigurieren.")
+    st.error("❌ Secrets nicht gefunden! Bitte prüfen.")
     st.stop()
 
-# --- SESSION LOGIK (LOGIN STATUS SPEICHERN) ---
+# --- SESSION LOGIK ---
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
     st.session_state["username"] = ""
 
 # ==========================================
-# GATERKEEPER: LOGIN SEITE
+# GATEKEEPER: LOGIN SEITE
 # ==========================================
 if not st.session_state["logged_in"]:
     st.title("🔒 The BOIIIS - Login")
-    st.write("Bitte melde dich an, um auf die Event-Planung zuzugreifen.")
-    
     with st.form("login_form"):
         username = st.text_input("Wer bist du? (Name)")
         password = st.text_input("Passwort", type="password")
-        submit = st.form_submit_button("Let's go")
-        
-        if submit:
+        if st.form_submit_button("Let's go", use_container_width=True):
             if username in USERS and USERS[username] == password:
                 st.session_state["logged_in"] = True
                 st.session_state["username"] = username
                 st.rerun()
             else:
-                st.error("Falscher Name oder Passwort. Versuch's nochmal!")
+                st.error("Falscher Name oder Passwort.")
 
 # ==========================================
-# HAUPT-APP (NUR SICHTBAR WENN EINGELOGGT)
+# HAUPT-APP (EINGELOGGT)
 # ==========================================
 else:
-    # --- NAVIGATION & LOGIN (SIDEBAR) ---
+    # --- NAVIGATION & PROFIL (SIDEBAR) ---
     with st.sidebar:
-        st.success(f"Eingeloggt als: **{st.session_state['username']}**")
-        if st.button("🚪 Ausloggen"):
+        st.markdown(f"### 👨‍💻 {st.session_state['username']}")
+        
+        # Admin-Check: Das Passwort-Feld taucht NUR für Luca auf
+        is_admin = False
+        if st.session_state['username'] == "Luca":
+            admin_pass = st.text_input("Admin-Passwort", type="password", placeholder="Nur für den Planer...")
+            is_admin = admin_pass == ADMIN_PASSWORD
+            st.caption("👑 Planer-Modus aktiv" if is_admin else "👑 Planer-Login")
+        else:
+            st.caption("👤 BOIIIS Member")
+        
+        if st.button("🚪 Ausloggen", use_container_width=True):
             st.session_state["logged_in"] = False
-            st.session_state["username"] = ""
+            st.session_state.clear()
             st.rerun()
         
-        st.write("---")
-        st.title("📌 Menü")
-        page = st.radio("Gehe zu:", ["🗓️ Events", "📊 Votings"])
+        st.divider()
+        st.markdown("#### 📌 Navigation")
+        page = st.radio("Menü", ["🗓️ Events", "📊 Votings"], label_visibility="collapsed")
         
-        st.write("---")
-        st.header("🔐 Planer-Rechte (Admin)")
-        password = st.text_input("Admin-Passwort", type="password", help="Nur für Event-Erstellung")
-
-        st.caption("Version 1.03")
+        st.divider()
+        st.caption("Version 1.11 (Stealth Admin)")
 
     # --- SEITE 1: EVENTS ---
     if page == "🗓️ Events":
         col_title, col_abo = st.columns([2, 1])
         with col_title:
             st.title("📅 Unsere Events")
-        
         with col_abo:
             webcal_link = ICAL_URL.replace("https://", "webcal://")
             st.write("Abo:")
             c1, c2 = st.columns(2)
-            with c1:
-                st.link_button("🍎", webcal_link, use_container_width=True, help="iPhone Kalender Abo")
-            with c2:
+            with c1: 
+                st.link_button("🍎", webcal_link, use_container_width=True)
+            with c2: 
                 google_url = f"https://www.google.com/calendar/render?cid={urllib.parse.quote(ICAL_URL)}"
-                st.link_button("🌐", google_url, use_container_width=True, help="Google/Android Kalender")
+                st.link_button("🌐", google_url, use_container_width=True)
 
         st.write("---")
 
-        if password == ADMIN_PASSWORD:
+        # Admin: Event Erstellung
+        if is_admin:
             with st.expander("➕ Neues Event planen"):
                 with st.form("event_form"):
                     summary = st.text_input("Was steht an?")
                     date_range = st.date_input("Zeitraum", value=[datetime.now(), datetime.now()])
-                    col_t1, col_t2 = st.columns(2)
-                    with col_t1:
-                        use_start = st.checkbox("Startzeit?")
-                        start_val = st.time_input("Von", value=datetime.strptime("12:00", "%H:%M"))
-                    with col_t2:
-                        use_end = st.checkbox("Endzeit?")
-                        end_val = st.time_input("Bis", value=datetime.strptime("14:00", "%H:%M"))
-                    
                     location = st.text_input("Wo?")
-                    description = st.text_area("Infos")
+                    description = st.text_area("Zusatzinfos")
                     
                     if st.form_submit_button("Event offiziell planen"):
                         d_start = date_range[0]
@@ -108,55 +106,142 @@ else:
                             display_date += f" - {d_end.strftime('%d.%m.%Y')}"
                         
                         df_current = conn.read(worksheet="events", ttl=0)
-                        new_row = pd.DataFrame([{
-                            "summary": summary, 
-                            "date": display_date, 
-                            "location": location, 
-                            "description": description, 
-                            "start_time": start_val.strftime("%H:%M") if use_start else "", 
-                            "end_time": end_val.strftime("%H:%M") if use_end else ""
-                        }])
+                        new_row = pd.DataFrame([{"summary": summary, "date": display_date, "location": location, "description": description, "start_time": "", "end_time": ""}])
                         conn.update(worksheet="events", data=pd.concat([df_current, new_row], ignore_index=True))
-                        st.success("Event gespeichert!")
+                        st.cache_data.clear()
+                        st.toast("Event wurde erstellt!", icon="✅")
+                        time.sleep(1)
                         st.rerun()
 
+        # Daten laden
         try:
-            df = conn.read(worksheet="events", ttl=0).fillna("")
-            p_df = conn.read(worksheet="participants", ttl=0).fillna("")
+            df = conn.read(worksheet="events", ttl=CACHE_TIME).fillna("")
+            p_df = conn.read(worksheet="participants", ttl=CACHE_TIME).fillna("")
             
+            try:
+                c_df = conn.read(worksheet="checklists", ttl=CACHE_TIME).fillna("")
+            except:
+                c_df = pd.DataFrame(columns=["event_summary", "item", "assigned_to", "done", "amount"])
+            
+            # Datentypen fixen (SICHERHEITSNETZ)
+            if 'amount' not in c_df.columns: 
+                c_df['amount'] = "1"
+            if 'done' in c_df.columns:
+                c_df['done'] = c_df['done'].astype(str)
+
             if not df.empty:
                 for i in reversed(df.index):
                     row = df.loc[i]
-                    s_t, e_t = str(row['start_time']), str(row['end_time'])
-                    t_title = f" ({s_t}{' - ' + e_t if e_t else ''} Uhr)" if s_t else ""
-                    
-                    with st.expander(f"🗓️ {row['date']}{t_title} - {row['summary']}"):
-                        c_info, c_admin = st.columns([3, 1.2])
-                        with c_info:
-                            st.write(f"📍 **Ort:** {row['location']}")
-                            st.info(f"💬 {row['description']}")
+                    with st.expander(f"🗓️ {row['date']} - {row['summary']}"):
+                        st.write(f"📍 **Ort:** {row['location']}")
+                        st.info(f"💬 {row['description']}")
                         
-                        if password == ADMIN_PASSWORD:
-                            with c_admin:
-                                if st.button("🗑️ Löschen", key=f"del_ev_{i}"):
-                                    conn.update(worksheet="events", data=df.drop(i))
+                        # --- CHECKLISTEN SEKTION ---
+                        st.write("### 🎒 Mitbringliste")
+                        event_mask = c_df['event_summary'] == row['summary']
+                        event_items_indices = c_df.index[event_mask].tolist()
+                        
+                        if event_items_indices:
+                            for c_idx in event_items_indices:
+                                c_row = c_df.loc[c_idx]
+                                col_amt, col_main, col_admin = st.columns([0.6, 4, 1.2])
+                                unique_key = f"chk_{i}_{c_idx}_{row['summary'][:5]}"
+                                
+                                with col_amt:
+                                    display_amt = int(float(c_row['amount'])) if str(c_row['amount']).strip() != "" else 1
+                                    st.write(f"**{display_amt}x**")
+
+                                with col_main:
+                                    st.write(f"**{c_row['item']}**")
+                                    current_assigned = [u.strip() for u in str(c_row['assigned_to']).split(",") if u.strip()]
+                                    
+                                    if current_assigned:
+                                        st.caption(f"👤 {', '.join(current_assigned)}")
+                                    else:
+                                        st.caption("⚪ Noch niemand eingeteilt")
+
+                                    if is_admin:
+                                        selected_users = st.multiselect("Zuweisen:", USER_OPTIONS, default=current_assigned, key=f"ms_{unique_key}", label_visibility="collapsed")
+                                        new_assigned_str = ", ".join(selected_users)
+                                        # SICHERHEITSNETZ: Konsequenter String-Vergleich
+                                        if new_assigned_str != str(c_row['assigned_to']):
+                                            c_df.at[c_idx, 'assigned_to'] = new_assigned_str
+                                            conn.update(worksheet="checklists", data=c_df)
+                                            st.cache_data.clear()
+                                            st.rerun()
+                                    else:
+                                        if st.session_state["username"] in current_assigned:
+                                            if st.button("Bin doch raus", key=f"out_{unique_key}"):
+                                                current_assigned.remove(st.session_state["username"])
+                                                c_df.at[c_idx, 'assigned_to'] = ", ".join(current_assigned)
+                                                conn.update(worksheet="checklists", data=c_df)
+                                                st.cache_data.clear()
+                                                st.rerun()
+                                        else:
+                                            if st.button("Übernehme ich", key=f"in_{unique_key}"):
+                                                current_assigned.append(st.session_state["username"])
+                                                c_df.at[c_idx, 'assigned_to'] = ", ".join(current_assigned)
+                                                conn.update(worksheet="checklists", data=c_df)
+                                                st.cache_data.clear()
+                                                st.rerun()
+
+                                with col_admin:
+                                    if is_admin:
+                                        col_edit, col_del = st.columns(2)
+                                        with col_edit:
+                                            with st.popover("📝"):
+                                                edit_name = st.text_input("Name", value=c_row['item'], key=f"ed_n_{unique_key}")
+                                                edit_amt_raw = st.number_input("Anzahl", value=display_amt, step=1, key=f"ed_a_{unique_key}")
+                                                if st.button("Speichern", key=f"save_{unique_key}"):
+                                                    c_df.at[c_idx, 'item'] = edit_name
+                                                    c_df.at[c_idx, 'amount'] = str(int(edit_amt_raw))
+                                                    conn.update(worksheet="checklists", data=c_df)
+                                                    st.cache_data.clear()
+                                                    st.rerun()
+                                        with col_del:
+                                            if st.button("🗑️", key=f"del_chk_{unique_key}"):
+                                                c_df = c_df.drop(c_idx)
+                                                conn.update(worksheet="checklists", data=c_df)
+                                                st.cache_data.clear()
+                                                st.rerun()
+                        else: 
+                            st.info("Die Liste ist noch leer.")
+
+                        if is_admin:
+                            with st.form(f"add_item_{i}", clear_on_submit=True):
+                                col_add_amt, col_add_item = st.columns([1, 3])
+                                with col_add_amt: 
+                                    add_amt = st.number_input("Menge", min_value=1, value=1, step=1)
+                                with col_add_item: 
+                                    add_item = st.text_input("Was wird gebraucht?")
+                                
+                                if st.form_submit_button("Hinzufügen") and add_item:
+                                    new_entry = pd.DataFrame([{"event_summary": row['summary'], "item": add_item, "amount": str(int(add_amt)), "assigned_to": "", "done": "FALSE"}])
+                                    conn.update(worksheet="checklists", data=pd.concat([c_df, new_entry], ignore_index=True))
+                                    st.cache_data.clear()
                                     st.rerun()
-                        
+
                         st.write("---")
+                        
                         curr_p = p_df[p_df['event'] == row['summary']]
-                        is_joined = st.session_state["username"] in curr_p['name'].values
-                        
-                        if is_joined:
-                            st.success("Du bist bei diesem Event dabei! ✅")
-                        else:
+                        if st.session_state["username"] not in curr_p['name'].values:
                             if st.button("Ich bin dabei! 🚀", key=f"j_ev_{i}"):
-                                new_p = pd.DataFrame([{"event": row['summary'], "name": st.session_state["username"]}])
-                                conn.update(worksheet="participants", data=pd.concat([p_df, new_p], ignore_index=True))
+                                new_participant = pd.DataFrame([{"event": row['summary'], "name": st.session_state["username"]}])
+                                conn.update(worksheet="participants", data=pd.concat([p_df, new_participant], ignore_index=True))
+                                st.cache_data.clear()
                                 st.rerun()
+                                
+                        st.write(f"🔥 **Dabei:** {', '.join(curr_p['name'].tolist())}" if not curr_p.empty else "🏃 Niemand.")
                         
-                        st.write(f"🔥 **Dabei:** {', '.join(curr_p['name'].tolist())}" if not curr_p.empty else "🏃 Noch niemand da.")
-            else:
+                        if is_admin:
+                            st.write("---")
+                            if st.button("🗑️ Event komplett löschen", key=f"del_ev_{i}"):
+                                conn.update(worksheet="events", data=df.drop(i))
+                                st.cache_data.clear()
+                                st.rerun()
+            else: 
                 st.write("Aktuell keine Events geplant.")
+                
         except Exception as e: 
             st.error(f"Event-Fehler: {e}")
 
@@ -164,144 +249,131 @@ else:
     elif page == "📊 Votings":
         st.title("📊 The BOIIIS Votings")
         
-        if password == ADMIN_PASSWORD:
+        if is_admin:
             with st.expander("➕ Neue Umfrage starten"):
                 with st.form("new_v"):
                     v_title = st.text_input("Thema")
                     v_options = st.text_area("Optionen (pro Zeile)")
-                    allow_multi = st.checkbox("Mehrfachauswahl erlauben? (Gut für Terminfindung)")
+                    allow_multi = st.checkbox("Mehrfachauswahl erlauben?")
                     
                     if st.form_submit_button("Start") and v_title and v_options:
                         v_df = conn.read(worksheet="votings", ttl=0)
-                        
-                        # --- AUTO-ID LOGIK (ZEITSTEMPEL) ---
                         v_id_new = datetime.now().strftime("%Y%m%d%H%M%S")
                         multi_val = "TRUE" if allow_multi else "FALSE"
                         
-                        new_v = pd.DataFrame([{
-                            "id": v_id_new, 
-                            "title": v_title, 
-                            "options": v_options, 
-                            "active": "TRUE",          
-                            "multi_choice": multi_val  
-                        }])
-                        
+                        new_v = pd.DataFrame([{"id": v_id_new, "title": v_title, "options": v_options, "active": "TRUE", "multi_choice": multi_val}])
                         updated_df = pd.concat([v_df, new_v], ignore_index=True)
                         
+                        # Die "Zwangsjacke" für Spalten
                         expected_columns = ["id", "title", "options", "active", "multi_choice"]
                         for col in expected_columns:
-                            if col not in updated_df.columns:
+                            if col not in updated_df.columns: 
                                 updated_df[col] = "" 
-                                
-                        updated_df = updated_df[expected_columns] 
                         
-                        conn.update(worksheet="votings", data=updated_df)
+                        conn.update(worksheet="votings", data=updated_df[expected_columns])
                         st.cache_data.clear() 
+                        st.toast("Umfrage gestartet!", icon="🗳️")
+                        time.sleep(1)
                         st.rerun()
 
         try:
-            v_df = conn.read(worksheet="votings", ttl=0).fillna("")
-            votes_df = conn.read(worksheet="votes", ttl=0).fillna("")
+            v_df = conn.read(worksheet="votings", ttl=CACHE_TIME).fillna("")
+            votes_df = conn.read(worksheet="votes", ttl=CACHE_TIME).fillna("")
             
-            if not v_df.empty and "id" in v_df.columns:
+            if not v_df.empty:
+                # SCHUTZ 1: Spaltennamen zwingend klein machen
                 v_df.columns = [c.lower() for c in v_df.columns]
-                if not votes_df.empty:
+                
+                if not votes_df.empty: 
                     votes_df.columns = [c.lower() for c in votes_df.columns]
+                    # SCHUTZ 2: IDs im Vote-Sheet in reinen Text umwandeln
+                    if 'voting_id' in votes_df.columns:
+                        votes_df['voting_id'] = votes_df['voting_id'].astype(str).str.strip()
 
                 for i, v_row in v_df.iterrows():
                     v_id_val = str(v_row['id']).strip()
                     
+                    # SCHUTZ 3: Robuste Abfrage für Mehrfachauswahl
                     is_multi = False
                     if 'multi_choice' in v_df.columns:
-                        val = str(v_row['multi_choice']).strip().upper()
-                        is_multi = val in ['TRUE', 'WAHR', '1', '1.0', 'YES', 'JA']
-
+                        is_multi = str(v_row['multi_choice']).strip().upper() in ['TRUE', 'WAHR', '1', '1.0', 'YES', 'JA']
+                    
                     with st.container(border=True):
                         st.subheader(f"🗳️ {v_row['title']}" + (" (Mehrfachwahl)" if is_multi else ""))
-                            
                         opts = [o.strip() for o in v_row['options'].split("\n") if o.strip()]
                         
+                        # Sicherstellen, dass c_votes existiert
                         if not votes_df.empty and 'voting_id' in votes_df.columns:
-                            votes_df['voting_id'] = votes_df['voting_id'].astype(str).str.strip()
                             c_votes = votes_df[votes_df['voting_id'] == v_id_val]
                         else:
                             c_votes = pd.DataFrame(columns=['voting_id', 'name', 'option'])
                         
-                        # --- FEAT: WER FEHLT NOCH? (ADMIN ONLY) ---
-                        if password == ADMIN_PASSWORD:
+                        if is_admin:
                             voted_users = set(c_votes['name'].unique()) if 'name' in c_votes.columns else set()
-                            all_users = set(USERS.keys())
-                            missing_users = all_users - voted_users
-                            
-                            if missing_users:
+                            missing_users = set(USERS.keys()) - voted_users
+                            if missing_users: 
                                 st.warning(f"⏳ **Noch offen von:** {', '.join(missing_users)}")
-                            else:
-                                st.success("🎯 Alle BOIIIS haben abgestimmt!")
+                            else: 
+                                st.success("🎯 Alle haben abgestimmt!")
 
-                        # Balken & Zählung
                         for o in opts:
                             count = len(c_votes[c_votes['option'] == o]) if 'option' in c_votes.columns else 0
                             st.write(f"**{o}** ({count} Stimmen)")
-                            # Sichere Division, falls USERS mal leer sein sollte
-                            user_count = max(1, len(USERS))
-                            st.progress(min(count / user_count, 1.0))
-                        
-                        # Enthaltungen anzeigen
+                            st.progress(min(count / max(1, len(USERS)), 1.0))
+
                         declined_count = len(c_votes[c_votes['option'] == "Kein Interesse / Enthaltung"]) if 'option' in c_votes.columns else 0
-                        if declined_count > 0:
+                        if declined_count > 0: 
                             st.caption(f"ℹ️ {declined_count} Person(en) haben kein Interesse oder enthalten sich.")
 
-                        # --- FEAT: DETAIL-AUSWERTUNG (ADMIN ONLY) ---
-                        if password == ADMIN_PASSWORD and not c_votes.empty:
-                            with st.expander("🕵️‍♂️ Detail-Auswertung (Wer hat was gewählt?)"):
+                        if is_admin and not c_votes.empty:
+                            with st.expander("🕵️‍♂️ Detail-Auswertung"):
                                 for o in opts:
                                     voters = c_votes[c_votes['option'] == o]['name'].tolist() if 'option' in c_votes.columns else []
-                                    if voters:
+                                    if voters: 
                                         st.write(f"- **{o}:** {', '.join(voters)}")
-                                
                                 declined_voters = c_votes[c_votes['option'] == "Kein Interesse / Enthaltung"]['name'].tolist() if 'option' in c_votes.columns else []
-                                if declined_voters:
+                                if declined_voters: 
                                     st.write(f"- **Kein Interesse:** {', '.join(declined_voters)}")
 
-                        has_voted = False
-                        if not c_votes.empty and 'name' in c_votes.columns:
-                            has_voted = st.session_state["username"] in c_votes['name'].values
+                        has_voted = st.session_state["username"] in c_votes['name'].values if not c_votes.empty and 'name' in c_votes.columns else False
 
                         col_v1, col_v2 = st.columns([1, 1])
                         with col_v1:
-                            if has_voted:
+                            if has_voted: 
                                 st.success("Erledigt! ✅")
                             else:
                                 with st.popover("Abstimmen"):
-                                    if is_multi:
+                                    if is_multi: 
                                         u_choices = st.multiselect("Deine Favoriten:", opts, key=f"uc_{v_id_val}")
                                     else:
                                         u_choice_single = st.radio("Deine Wahl:", opts, key=f"uc_{v_id_val}")
                                         u_choices = [u_choice_single] if u_choice_single else []
 
                                     if st.button("Voten!", key=f"vb_{v_id_val}"):
-                                        if not u_choices:
+                                        if not u_choices: 
                                             st.warning("Bitte wähle etwas aus.")
                                         else:
-                                            new_votes = pd.DataFrame([
-                                                {"voting_id": v_id_val, "name": st.session_state["username"], "option": c} 
-                                                for c in u_choices
-                                            ])
+                                            new_votes = pd.DataFrame([{"voting_id": v_id_val, "name": st.session_state["username"], "option": c} for c in u_choices])
                                             conn.update(worksheet="votes", data=pd.concat([votes_df, new_votes], ignore_index=True))
+                                            st.cache_data.clear()
+                                            st.toast("Abgestimmt!", icon="🗳️")
+                                            time.sleep(1)
                                             st.rerun()
                                             
                                     st.write("---")
-                                    # FEAT: KEIN INTERESSE BUTTON
                                     if st.button("Kein Interesse ✋", key=f"decl_{v_id_val}", use_container_width=True):
                                         new_vote = pd.DataFrame([{"voting_id": v_id_val, "name": st.session_state["username"], "option": "Kein Interesse / Enthaltung"}])
                                         conn.update(worksheet="votes", data=pd.concat([votes_df, new_vote], ignore_index=True))
+                                        st.cache_data.clear()
                                         st.rerun()
                         
-                        if password == ADMIN_PASSWORD:
+                        if is_admin:
                             if col_v2.button("🗑️ Beenden", key=f"dv_{v_id_val}"):
                                 conn.update(worksheet="votings", data=v_df.drop(i))
+                                st.cache_data.clear()
                                 st.rerun()
             else: 
                 st.info("Keine aktiven Umfragen.")
+                
         except Exception as e: 
             st.error(f"Votings-Fehler: {e}")
