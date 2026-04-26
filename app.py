@@ -10,30 +10,29 @@ st.set_page_config(page_title="The BOIIIS App", page_icon="📅", layout="center
 
 # --- VERBINDUNG ZUM GOOGLE SHEET ---
 conn = st.connection("gsheets", type=GSheetsConnection)
-CACHE_TIME = 600 # 10 Minuten Caching für maximale Performance
+CACHE_TIME = 600 
 
-# --- SICHERHEIT & DATENLADEN ---
+# --- SICHERHEIT & DATEN ---
 try:
     ICAL_URL = st.secrets["calendar"]["ical_link"]
     ADMIN_PASSWORD = st.secrets["auth"]["admin_password"]
     USERS = st.secrets["users"] 
     USER_OPTIONS = list(USERS.keys())
 except Exception:
-    st.error("❌ Secrets nicht gefunden! Bitte prüfen.")
+    st.error("❌ Secrets fehlen!")
     st.stop()
 
-# --- SESSION LOGIK ---
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
     st.session_state["username"] = ""
 
 # ==========================================
-# GATEKEEPER: LOGIN SEITE
+# GATEKEEPER: LOGIN
 # ==========================================
 if not st.session_state["logged_in"]:
     st.title("🔒 The BOIIIS - Login")
     with st.form("login_form"):
-        username = st.text_input("Wer bist du? (Name)")
+        username = st.text_input("Wer bist du?")
         password = st.text_input("Passwort", type="password")
         if st.form_submit_button("Let's go", use_container_width=True):
             if username in USERS and USERS[username] == password:
@@ -44,17 +43,15 @@ if not st.session_state["logged_in"]:
                 st.error("Falscher Name oder Passwort.")
 
 # ==========================================
-# HAUPT-APP (EINGELOGGT)
+# HAUPT-APP
 # ==========================================
 else:
-    # --- NAVIGATION & PROFIL (SIDEBAR) ---
     with st.sidebar:
         st.markdown(f"### 👨‍💻 {st.session_state['username']}")
         
-        # Admin-Check: Das Passwort-Feld taucht NUR für Luca auf
         is_admin = False
         if st.session_state['username'] == "Luca":
-            admin_pass = st.text_input("Admin-Passwort", type="password", placeholder="Nur für den Planer...")
+            admin_pass = st.text_input("Admin-Passwort", type="password", placeholder="Planer-Login...")
             is_admin = admin_pass == ADMIN_PASSWORD
             st.caption("👑 Planer-Modus aktiv" if is_admin else "👑 Planer-Login")
         else:
@@ -66,11 +63,8 @@ else:
             st.rerun()
         
         st.divider()
-        st.markdown("#### 📌 Navigation")
-        page = st.radio("Menü", ["🗓️ Events", "📊 Votings"], label_visibility="collapsed")
-        
-        st.divider()
-        st.caption("Version 1.11 (Stealth Admin)")
+        page = st.radio("Menü", ["🗓️ Events", "📊 Votings", "💰 Finanzen"], label_visibility="collapsed")
+        st.caption("Version 1.11 (Finance Upgrade)")
 
     # --- SEITE 1: EVENTS ---
     if page == "🗓️ Events":
@@ -377,3 +371,132 @@ else:
                 
         except Exception as e: 
             st.error(f"Votings-Fehler: {e}")
+
+# --- SEITE 3: FINANZEN (UPDATE V1.12) ---
+    elif page == "💰 Finanzen":
+        st.title("💰 Kasse & Abrechnung")
+        
+        try:
+            f_df = conn.read(worksheet="finances", ttl=CACHE_TIME).fillna("")
+            p_df = conn.read(worksheet="participants", ttl=CACHE_TIME).fillna("")
+            pay_df = conn.read(worksheet="payments", ttl=CACHE_TIME).fillna("")
+            ev_df = conn.read(worksheet="events", ttl=CACHE_TIME).fillna("")
+
+            # SICHERHEITSNETZ: Spalte für Schuldner hinzufügen, falls nicht existent
+            if 'debtors' not in f_df.columns:
+                f_df['debtors'] = ""
+
+            if is_admin:
+                with st.expander("💸 Neue Rechnung erstellen"):
+                    with st.form("finance_form"):
+                        target_ev = st.selectbox("Event wählen", ev_df['summary'].tolist() if not ev_df.empty else ["Keine Events"])
+                        t_cost = st.number_input("Gesamtkosten (€) (Z.B. Hotel + Sprit)", min_value=0.0, step=10.0)
+                        prov = st.number_input("Deine Provision pro Kopf (€)", min_value=0.0, max_value=25.0, value=2.0, step=0.5)
+                        
+                        # NEU: Explizite Auswahl der Schuldner
+                        selected_debtors = st.multiselect(
+                            "Kostensplit: Wer teilt sich die Rechnung?", 
+                            USER_OPTIONS, 
+                            help="Die Gesamtkosten werden durch die Anzahl der hier gewählten Personen geteilt."
+                        )
+                        
+                        if st.form_submit_button("Rechnung abschicken"):
+                            if not selected_debtors:
+                                st.warning("Bitte wähle mindestens eine Person für den Kostensplit aus!")
+                            else:
+                                new_f = pd.DataFrame([{
+                                    "event_summary": target_ev, 
+                                    "total_cost": t_cost, 
+                                    "provision_per_person": prov,
+                                    "debtors": ", ".join(selected_debtors) # Speichere die Namen
+                                }])
+                                old_f = conn.read(worksheet="finances", ttl=0)
+                                conn.update(worksheet="finances", data=pd.concat([old_f, new_f], ignore_index=True))
+                                st.cache_data.clear()
+                                st.toast("Rechnung erstellt!", icon="💸")
+                                time.sleep(1)
+                                st.rerun()
+
+                st.write("### 🕵️‍♂️ Offene Zahlungen (Admin-Übersicht)")
+                if not f_df.empty:
+                    for f_idx, f_row in f_df.iterrows():
+                        ev_name = f_row['event_summary']
+                        
+                        # Lese die expliziten Schuldner aus. Falls alt/leer, nutze Event-Teilnehmer
+                        if str(f_row.get('debtors', '')).strip():
+                            debtors_list = [u.strip() for u in str(f_row['debtors']).split(",") if u.strip()]
+                        else:
+                            debtors_list = p_df[p_df['event'] == ev_name]['name'].tolist()
+                        
+                        if debtors_list:
+                            # Kosten pro Kopf = (Gesamt / Ausgewählte Personen) + Provision
+                            per_head = (float(f_row['total_cost']) / len(debtors_list)) + float(f_row['provision_per_person'])
+                            
+                            # NEU: Mülleimer für Rechnungen
+                            col_title, col_del = st.columns([4, 1])
+                            with col_title:
+                                st.write(f"**{ev_name}** ({per_head:.2f} € p.P.)")
+                            with col_del:
+                                if st.button("🗑️", key=f"del_fin_{f_idx}", help="Rechnung löschen"):
+                                    conn.update(worksheet="finances", data=f_df.drop(f_idx))
+                                    st.cache_data.clear()
+                                    st.rerun()
+
+                            # Die "Wurde bezahlt" Buttons
+                            for person in debtors_list:
+                                if person == st.session_state["username"]: 
+                                    continue # Du schuldest dir selbst nichts!
+                                
+                                # Prüfe in 'payments', ob ein Eintrag für diese Person & Event existiert
+                                paid_status = not pay_df[(pay_df['event_summary'] == ev_name) & (pay_df['user_name'] == person)].empty
+                                
+                                c1, c2 = st.columns([3, 1])
+                                with c1:
+                                    st.write(f"{'✅' if paid_status else '⏳'} {person}")
+                                with c2:
+                                    if not paid_status:
+                                        if st.button("Bezahlt", key=f"pay_{ev_name}_{person}_{f_idx}"):
+                                            new_pay = pd.DataFrame([{"event_summary": ev_name, "user_name": person, "is_paid": "TRUE"}])
+                                            old_pay = conn.read(worksheet="payments", ttl=0)
+                                            conn.update(worksheet="payments", data=pd.concat([old_pay, new_pay], ignore_index=True))
+                                            st.cache_data.clear()
+                                            st.toast(f"Geld von {person} erhalten!", icon="💰")
+                                            time.sleep(1)
+                                            st.rerun()
+                            st.divider()
+                else:
+                    st.info("Noch keine Rechnungen gestellt.")
+
+            # --- USER ANSICHT (RECHNUNGS-DASHBOARD) ---
+            if not is_admin: # Die Jungs sehen ihre eigenen Schulden
+                st.write("### 🧾 Meine offenen Rechnungen")
+                my_name = st.session_state["username"]
+                found_any = False
+                
+                for _, f_row in f_df.iterrows():
+                    ev_name = f_row['event_summary']
+                    
+                    if str(f_row.get('debtors', '')).strip():
+                        debtors_list = [u.strip() for u in str(f_row['debtors']).split(",") if u.strip()]
+                    else:
+                        debtors_list = p_df[p_df['event'] == ev_name]['name'].tolist()
+                    
+                    if my_name in debtors_list:
+                        # Prüfen ob bereits bezahlt
+                        is_paid = not pay_df[(pay_df['event_summary'] == ev_name) & (pay_df['user_name'] == my_name)].empty
+                        
+                        if not is_paid:
+                            found_any = True
+                            per_head = (float(f_row['total_cost']) / len(debtors_list)) + float(f_row['provision_per_person'])
+                            with st.container(border=True):
+                                st.subheader(f"📅 {ev_name}")
+                                st.write(f"Zu zahlen: **{per_head:.2f} €**")
+                                st.caption(f"(Inklusive {f_row['provision_per_person']}€ Planungs-Provision)")
+                                # Hier könntest du sogar einen Link einfügen:
+                                # st.markdown("[Jetzt per PayPal zahlen](https://paypal.me/DeinName)")
+                
+                if not found_any:
+                    st.success("Alle Rechnungen beglichen. Du bist sauber! 💸")
+
+        except Exception as e:
+            st.error(f"Finanz-Fehler: {e}")
